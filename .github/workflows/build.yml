@@ -1,0 +1,422 @@
+name: Build-PyDicomGrouping
+on:
+  push:
+    tags:
+      - "v*"
+      - "*-v*"
+
+env:
+  PROJECT_PATH: "backend/preprocessing_tools/PyDicomGrouping"
+
+jobs:
+  build:
+    name: Build for ${{ matrix.friendly_name }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+        fail-fast: false
+        matrix:
+          include:
+            - os: ubuntu-22.04
+              python-version: '3.10'
+              friendly_name: "Linux_x64"
+              artifact_name: "PyDicomGrouping_Linux_x64.tar.gz"
+            - os: windows-2022
+              python-version: '3.10'
+              friendly_name: "Windows_10_11_x64"
+              artifact_name: "PyDicomGrouping_Windows_10_11_x64.zip"
+            - os: macos-14
+              python-version: '3.10'
+              friendly_name: "macOS_ARM64_M_Series"
+              artifact_name: "PyDicomGrouping_macOS_arm64.zip"
+    steps:
+        - name: Checkout Private Source Code
+          uses: actions/checkout@v4
+          with:
+            repository: "15625148866/Xclepius"
+            token: ${{ secrets.MY_PRIVATE_TOKEN }}
+            ref: ${{ github.ref_name }}
+            path: ${{ env.PROJECT_PATH }}
+
+        - name: Set up Python
+          uses: actions/setup-python@v5
+          with:
+            python-version: ${{ matrix.python-version }}
+
+        - name: Parse Tag and Set Path
+          run: |
+            python -c "
+            import os
+            
+            tag = '${{ github.ref_name }}'
+            if '-v' in tag:
+                # 类似 Bash 中的 cut -d'-' -f1
+                proj_name = tag.split('-')[0]
+            else:
+                proj_name = 'PyDicomGrouping'
+                
+            project_path = f'backend/preprocessing_tools/{proj_name}'
+            
+            # 跨平台安全地写入 GITHUB_ENV
+            env_file = os.getenv('GITHUB_ENV')
+            with open(env_file, 'a', encoding='utf-8') as f:
+                f.write(f'PROJECT_PATH={project_path}\n')
+                f.write(f'PROJ_NAME={proj_name}\n')
+                
+            print(f'Successfully set PROJ_NAME={proj_name} and PROJECT_PATH={project_path}')
+            "
+
+        - name: Install system dependencies (Linux)
+          if: matrix.os == 'ubuntu-22.04'
+          run: |
+            sudo apt-get update && sudo apt-get install -y \
+              libjpeg-dev \
+              zlib1g-dev \
+              libssl-dev
+
+        - name: Install system dependencies (macOS)
+          if: matrix.os == 'macos-14'
+          run: |
+            brew install jpeg zlib openssl
+
+        - name: Install dependencies for wheel building
+          working-directory: ${{ env.PROJECT_PATH }} 
+          run: |
+            python -m pip install --upgrade pip
+            pip install Pillow pyarmor build
+            # 安装项目及其所有依赖
+            pip install .[dev]
+            # 确保安装所有需要的依赖
+            pip install cryptography fernet Pillow pyinstaller numpy pandas nibabel pydicom polars openpyxl xlsxwriter reportlab qrcode py7zr rarfile alive_progress selenium pylibjpeg pylibjpeg-libjpeg
+
+        - name: Check Directory
+          shell: bash
+          run: |
+            echo "Current Path: $(pwd)"
+            echo "Target Path: ${{ env.PROJECT_PATH }}"
+            ls -la "${{ env.PROJECT_PATH }}"
+
+        - name: Obfuscate and Build Wheel
+          shell: bash
+          run: |
+            cd ${{ env.PROJECT_PATH }}
+
+            rm -rf dist_temp build dist
+            mkdir -p dist_temp
+
+            pyarmor gen -O dist_temp -i --prefix PyDicomGrouping.entry_points -r src/PyDicomGrouping \
+                --exclude src/PyDicomGrouping/entry_points \
+                --exclude src/PyDicomGrouping/demos \
+                --exclude src/PyDicomGrouping/__init__.py
+
+            RUNTIME_DIR="dist_temp/PyDicomGrouping/entry_points/pyarmor_runtime_000000"
+            mkdir -p $RUNTIME_DIR
+            pyarmor gen key -e 30 -O $RUNTIME_DIR
+            
+            cp -rf dist_temp/PyDicomGrouping/* src/PyDicomGrouping/
+            python -m build
+
+            RAW_OS="${{ matrix.os }}"
+            if [[ "$RAW_OS" == "windows-2022" ]]; then
+                PLATFORM_TAG="win_amd64"
+                FRIENDLY_OS="Windows_x64"
+            elif [[ "$RAW_OS" == "macos-14" ]]; then
+                PLATFORM_TAG="macosx_11_0_arm64"
+                FRIENDLY_OS="macOS_arm64"
+            elif [[ "$RAW_OS" == "ubuntu-22.04" ]]; then
+                PLATFORM_TAG="manylinux_2_35_x86_64"
+                FRIENDLY_OS="Linux_x64"
+            else
+                PLATFORM_TAG="any"
+                FRIENDLY_OS=$(echo "$RAW_OS" | tr '-' '_')
+            fi
+
+            for f in dist/*.whl; do
+                NEW_NAME=$(echo $f | sed "s/-any.whl/-${PLATFORM_TAG}.whl/")
+                mv "$f" "$NEW_NAME"
+                echo "Renamed to $NEW_NAME"
+            done
+            
+            echo "FRIENDLY_OS=$FRIENDLY_OS" >> $GITHUB_ENV
+
+        # - name: Upload Wheel Artifacts
+        #   uses: actions/upload-artifact@v4
+        #   with:
+        #     name: wheel-${{ matrix.friendly_name }}
+        #     path: ${{ github.workspace }}/${{ env.PROJECT_PATH }}/dist/*.whl
+
+        - name: Upload Wheels Directly to GitHub Release
+          uses: softprops/action-gh-release@v2
+          if: startsWith(github.ref, 'refs/tags/')
+          with:
+            # 允许文件不存在时不报错（防止某些平台没有生成 .whl）
+            fail_on_unmatched_files: false
+            files: ${{ github.workspace }}/${{ env.PROJECT_PATH }}/dist/*.whl
+          env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+        - name: Upgrade pip and install builder
+          run: |
+            python -m pip install --upgrade pip
+            # 必须安装 Pillow 解决 macOS 的图标格式转换问题，安装 pyinstaller 执行打包
+            pip install Pillow pyinstaller
+            # 确保安装所有项目依赖
+            pip install -e ${{ env.PROJECT_PATH }}[dev]
+            # 显示已安装的依赖列表，便于调试
+            pip list
+
+        - name: Build Executable with PyInstaller (Linux/macOS)
+          if: matrix.os == 'ubuntu-22.04' || matrix.os == 'macos-14'
+          run: |
+            cd ${{ github.workspace }}/${{ env.PROJECT_PATH }}
+            rm -rf dist_app
+            mkdir -p dist_app
+            
+            export APP_VERSION=$(echo "${{ github.ref_name }}" | sed 's/.*-v//; s/^v//')
+            
+            pyinstaller --noconfirm --distpath dist_app PyDicomGrouping.spec
+            
+            cd dist_app
+            if [ "${{ matrix.os }}" = "ubuntu-22.04" ]; then
+              tar -czvf ${{ matrix.artifact_name }} PyDicomGrouping
+            else
+              echo "正在安装 create-dmg 工具..."
+              HOMEBREW_NO_AUTO_UPDATE=1 brew install create-dmg
+
+              if [ ! -d "PyDicomGrouping.app" ]; then
+                echo "❌ 错误：未能在 dist_app 中找到 'PyDicomGrouping.app'！"
+                echo "请检查 PyDicomGrouping.spec 中的 BUNDLE(name='...') 是否被误修改。"
+                exit 1
+              fi
+
+              # 💡【全新防错逻辑】：通过两步走，彻底剥离所有可能的后缀 (.zip, .tar, .gz 等)
+              # 1. 提取可能带路径的文件名
+              RAW_NAME=$(basename "${{ matrix.artifact_name }}")
+              # 2. 彻底切除第一个点（.）之后的所有扩展名，只留纯名称
+              CLEAN_DMG_NAME="${RAW_NAME%%.*}"
+
+              ICON_PATH="${{ github.workspace }}/${{ env.PROJECT_PATH }}/src/PyDicomGrouping/desktop/resources/icons/icon.icns"
+              
+              echo "开始构建拖拽安装 DMG 映像..."
+              # create-dmg 参数说明：
+              # --volname: 挂载后的磁盘名称
+              # --window-pos / --window-size: 弹窗的位置和大小
+              # --icon-size: 图标大小
+              # --app-drop-link: 自动创建 Applications 快捷方式并指定坐标 (400, 120)
+              # --icon: 你的 App 在 DMG 弹窗中的坐标 (150, 120)
+              create-dmg \
+                --volname "PyDicomGrouping 安装程序" \
+                --window-pos 200 120 \
+                --window-size 600 300 \
+                --icon-size 100 \
+                --icon "PyDicomGrouping.app" 150 120 \
+                --app-drop-link 450 120 \
+                --volicon "${ICON_PATH}" \
+                "${CLEAN_DMG_NAME}.dmg" \
+                "PyDicomGrouping.app"
+                
+              echo "✅ DMG 打包完成！"
+            fi
+
+        - name: Build Executable with PyInstaller (Windows)
+          if: matrix.os == 'windows-2022'
+          shell: pwsh
+          run: |
+            # 1. 强制 Windows 控制台和 Python 统一使用 UTF-8 编码（彻底解决 UnicodeEncodeError）
+            $env:PYTHONIOENCODING="utf-8"
+            [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+            
+            # 2. 进入项目子目录
+            cd "${{ github.workspace }}/${{ env.PROJECT_PATH }}"
+            
+            # 3. 清理并重建输出目录
+            if (Test-Path dist_app) { Remove-Item -Recurse -Force dist_app }
+            New-Item -ItemType Directory -Force -Path dist_app
+            
+            # 4. 解析版本号（与你的 Linux/macOS 逻辑对齐）
+            $env:APP_VERSION = "${{ github.ref_name }}".Split('-')[-1].TrimStart("v")
+            
+            # 5. 执行打包
+            pyinstaller --noconfirm --distpath dist_app PyDicomGrouping.spec
+            
+            # 6. 检查打包结果并进行压缩
+            cd dist_app
+            
+            # 动态检查是否存在 PyDicomGrouping 文件夹
+            if (Test-Path "PyDicomGrouping") {
+                Write-Host "成功找到打包文件夹，开始压缩..."
+                # 确保输出文件名带有 .zip 后缀，方便后续上传和下载
+                Compress-Archive -Path "PyDicomGrouping" -DestinationPath "${{ matrix.artifact_name }}" -Force
+            } else {
+                Write-Error "错误：PyInstaller 未能在 dist_app 中生成 'PyDicomGrouping' 文件夹！"
+                Write-Error "请检查上方 PyInstaller 的编译日志，寻找编译期间的 Python 报错。"
+                exit 1
+            }
+        - name: Test Executable Startup (Windows)
+          if: matrix.os == 'windows-2022'
+          shell: powershell
+          run: |
+            echo "🚀 正在启动 Windows 自动化运行测试..."
+            
+            # 1. 动态搜寻 PyDicomGrouping.exe 的绝对物理路径
+            $detectedExe = Get-ChildItem -Path "${{ github.workspace }}" -Filter "PyDicomGrouping.exe" -Recurse -File | Select-Object -First 1
+            
+            if ($null -eq $detectedExe) {
+                echo "❌ 错误：在整个工作区中都未找到生成的 exe 文件！"
+                echo "当前扫描的根目录为: ${{ github.workspace }}"
+                exit 1
+            }
+
+            $exePath = $detectedExe.FullName
+            # 获取 .exe 文件所在的绝对目录（即 dist_app/PyDicomGrouping 这一层）
+            $exeDir = $detectedExe.DirectoryName  
+            
+            echo "🎯 已成功定位到程序入口: $exePath"
+            echo "📂 已自动锁定程序工作目录: $exeDir"
+
+            # 2. 💡【核心修复】：显式指定 -WorkingDirectory，强制 exe 在它自己的文件夹环境下运行
+            # 这样它才能顺利读取到身边的 Qt6Quick.dll、pyside6 依赖，免疫闪退
+            $process = Start-Process -FilePath $exePath -WorkingDirectory $exeDir -WindowStyle Hidden -PassThru
+            
+            echo "⏳ 正在监控程序加载状态，请稍候..."
+            Start-Sleep -Seconds 8
+            
+            # 3. 检查进程是否仍在存活
+            if ($process.HasExited) {
+                echo "❌ 错误：程序加载失败！在初始化过程中异常闪退。"
+                echo "提示：请检查上一轮修改中，.spec 里的 upx=False 和 cleaned_binaries 代码是否生效。"
+                exit 1
+            } else {
+                echo "✅ 成功：程序能够正常打开并在后台平稳运行！"
+                # 强行终止测试进程，以便流水线继续往下走
+                Stop-Process -Id $process.Id -Force
+                echo "🧹 测试进程已安全关闭。"
+            }
+
+        - name: Test Executable Startup (macOS)
+          if: matrix.os == 'macos-14'
+          run: |
+            echo "🚀 正在启动 macOS 自动化运行测试..."
+            
+            # 1. 动态搜寻 .app 内置的二进制程序入口
+            DETECTED_PATH=$(find ${{ github.workspace }} -type f -path "*/PyDicomGrouping.app/Contents/MacOS/PyDicomGrouping" | head -n 1)
+            
+            if [ -z "$DETECTED_PATH" ]; then
+              echo "❌ 错误：在工作流中未找到 macOS App 二进制入口点！"
+              exit 1
+            fi
+            
+            echo "🎯 已成功定位到程序入口: $DETECTED_PATH"
+            
+            # 2. 💡【核心修复】：获取程序所在的绝对目录，并 cd 进去运行
+            APP_DIR=$(dirname "$DETECTED_PATH")
+            echo "📂 已自动锁定程序工作目录: $APP_DIR"
+            cd "$APP_DIR"
+            
+            # 3. 在当前的本地上下文环境下，后台启动二进制文件
+            ./PyDicomGrouping &
+            APP_PID=$!
+            
+            echo "⏳ 正在监控程序加载状态，请稍候..."
+            sleep 8
+            
+            # 4. 检查进程是否仍在运行
+            if ! ps -p $APP_PID > /dev/null; then
+              echo "❌ 错误：macOS 程序加载失败！程序在拉起时发生了闪退。"
+              exit 1
+            else
+              echo "✅ 成功：macOS 程序能够正常拉起并且平稳运行！"
+              kill -9 $APP_PID
+              echo "🧹 测试进程已安全关闭。"
+            fi
+
+        - name: Test Executable Startup (Linux)
+          if: matrix.os == 'ubuntu-22.04'
+          run: |
+            echo "🚀 正在安装 Linux 虚拟显示环境 (Xvfb)..."
+            sudo apt-get update
+            sudo apt-get install -y xvfb libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libjack-jackd2-dev
+
+            echo "🚀 正在启动 Linux 自动化运行测试..."
+            
+            # 1. 动态搜寻名为 PyDicomGrouping 的 Linux 二进制原生程序
+            DETECTED_PATH=$(find ${{ github.workspace }} -type f -not -path "*/.*" -name "PyDicomGrouping" | grep -v "dist_app/dist_app" | head -n 1)
+            
+            if [ -z "$DETECTED_PATH" ]; then
+              DETECTED_PATH=$(find ${{ github.workspace }} -type f -not -path "*/.*" -name "PyDicomGrouping" | head -n 1)
+            fi
+            
+            if [ -z "$DETECTED_PATH" ]; then
+              echo "❌ 错误：在工作流中未找到 Linux 可执行文件！"
+              exit 1
+            fi
+            
+            echo "🎯 已成功定位到程序入口: $DETECTED_PATH"
+            
+            # 2. 💡【核心修复】：获取程序所在的绝对目录，切换进去并赋予执行权限
+            EXE_DIR=$(dirname "$DETECTED_PATH")
+            echo "📂 已自动锁定程序工作目录: $EXE_DIR"
+            cd "$EXE_DIR"
+            chmod +x ./PyDicomGrouping
+            
+            # 3. 使用 xvfb-run 在当前的本地上下文环境下，后台启动程序
+            xvfb-run --server-args="-screen 0 1024x768x24" ./PyDicomGrouping &
+            APP_PID=$!
+            
+            echo "⏳ 正在监控程序加载状态，请稍候..."
+            sleep 8
+            
+            # 4. 检查进程是否仍在运行
+            if ! ps -p $APP_PID > /dev/null; then
+              echo "❌ 错误：Linux 程序加载失败！程序在初始化时发生了闪退。"
+              exit 1
+            else
+              echo "✅ 成功：Linux 程序能够正常在虚拟显示器中拉起并平稳运行！"
+              kill -9 $APP_PID
+              echo "🧹 测试进程已安全关闭。"
+            fi
+        # - name: Upload Executable Artifacts
+        #   uses: actions/upload-artifact@v4
+        #   with:
+        #     name: app-${{ matrix.friendly_name }}
+        #     path: ${{ github.workspace }}/${{ env.PROJECT_PATH }}/dist_app/${{ matrix.artifact_name }}
+        - name: Upload to GitHub Release
+          uses: softprops/action-gh-release@v2
+          with:
+            # 使用通配符 * 匹配 dist_app 目录下的所有压缩文件（.zip, .tar.gz 等）
+            files: ${{ github.workspace }}/${{ env.PROJECT_PATH }}/dist_app/*.*
+          env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # publish:
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: write
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
+
+  #     - name: Download all artifacts
+  #       uses: actions/download-artifact@v4
+  #       with: 
+  #         path: all-artifacts
+  #         merge-multiple: false
+
+  #     - name: List downloaded files
+  #       run: |
+  #         echo "Downloaded artifacts:"
+  #         find all-artifacts -type f
+
+  #     - name: Create Release
+  #       uses: softprops/action-gh-release@v2
+  #       if: startsWith(github.ref, 'refs/tags/')
+  #       with:
+  #         fail_on_unmatched_files: false
+  #         files: |
+  #           all-artifacts/**/*.whl
+  #           all-artifacts/**/*.tar.gz
+  #           all-artifacts/**/*.zip
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
