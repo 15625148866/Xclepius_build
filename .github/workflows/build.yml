@@ -116,6 +116,13 @@ jobs:
             RAW_PATH="${{ github.workspace }}/${{ env.PROJECT_PATH }}"
             SAFE_PATH="${RAW_PATH//\\//}"
 
+            # 先切换到正确的项目根目录
+            cd "$SAFE_PATH"
+            
+            # 打印当前路径和文件列表，用于排查
+            echo "Current space:" && pwd
+            ls -la
+
             rm -rf dist_temp build dist
             mkdir -p dist_temp
 
