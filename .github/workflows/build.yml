@@ -278,41 +278,39 @@ jobs:
           if: matrix.os == 'windows-2022'
           shell: powershell
           run: |
-            echo "🚀 正在启动 Windows 自动化运行测试..."
+            echo "Starting Windows automation startup test..."
             
-            # 1. 动态搜寻 PyDicomGrouping.exe 的绝对物理路径
-            $detectedExe = Get-ChildItem -Path "${{ github.workspace }}" -Filter "PyDicomGrouping.exe" -Recurse -File | Select-Object -First 1
+            # 1. Search for PyDicomGrouping.exe
+            $workspace = "${{ github.workspace }}".Replace('\', '/')
+            $detectedExe = Get-ChildItem -Path $workspace -Filter "PyDicomGrouping.exe" -Recurse -File | Select-Object -First 1
             
             if ($null -eq $detectedExe) {
-                echo "❌ 错误：在整个工作区中都未找到生成的 exe 文件！"
-                echo "当前扫描的根目录为: ${{ github.workspace }}"
+                echo "ERROR: PyDicomGrouping.exe not found in workspace!"
+                echo "Current root path: $workspace"
                 exit 1
             }
 
             $exePath = $detectedExe.FullName
-            # 获取 .exe 文件所在的绝对目录（即 dist_app/PyDicomGrouping 这一层）
             $exeDir = $detectedExe.DirectoryName  
             
-            echo "🎯 已成功定位到程序入口: $exePath"
-            echo "📂 已自动锁定程序工作目录: $exeDir"
+            echo "Successfully located target entry: $exePath"
+            echo "Automatically locked working directory: $exeDir"
 
-            # 2. 💡【核心修复】：显式指定 -WorkingDirectory，强制 exe 在它自己的文件夹环境下运行
-            # 这样它才能顺利读取到身边的 Qt6Quick.dll、pyside6 依赖，免疫闪退
+            # 2. Force specific WorkingDirectory to prevent PySide6/Qt6 initialization failure
             $process = Start-Process -FilePath $exePath -WorkingDirectory $exeDir -WindowStyle Hidden -PassThru
             
-            echo "⏳ 正在监控程序加载状态，请稍候..."
+            echo "Monitoring process loading state, please wait..."
             Start-Sleep -Seconds 8
             
-            # 3. 检查进程是否仍在存活
+            # 3. Check if the process is still alive
             if ($process.HasExited) {
-                echo "❌ 错误：程序加载失败！在初始化过程中异常闪退。"
-                echo "提示：请检查上一轮修改中，.spec 里的 upx=False 和 cleaned_binaries 代码是否生效。"
+                echo "ERROR: Executable crashed during initialization!"
+                echo "Tip: Please check if upx=False and cleaned_binaries in your .spec file are working properly."
                 exit 1
             } else {
-                echo "✅ 成功：程序能够正常打开并在后台平稳运行！"
-                # 强行终止测试进程，以便流水线继续往下走
+                echo "SUCCESS: Program is running smoothly in the background!"
                 Stop-Process -Id $process.Id -Force
-                echo "🧹 测试进程已安全关闭。"
+                echo "Cleanup: Test process has been safely terminated."
             }
 
         - name: Test Executable Startup (macOS)
