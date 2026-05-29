@@ -39,6 +39,35 @@ jobs:
             token: ${{ secrets.MY_PRIVATE_TOKEN }}
             ref: ${{ github.ref_name }}
 
+        - name: Identify Repository Version
+          shell: bash
+          run: |
+            # 1. 切换到代码目录（如果 env.PROJECT_PATH 有定义的话）
+            RAW_PATH="${{ github.workspace }}/${{ env.PROJECT_PATH }}"
+            SAFE_PATH="${RAW_PATH//\\//}"
+            cd "$SAFE_PATH" 2>/dev/null || cd "${{ github.workspace }}"
+
+            echo "=================================================="
+            echo "🔍 正在核对本次打包使用的 [Xclepius] 仓库物理版本..."
+            echo "=================================================="
+            
+            # 2. 提取并打印 Git 核心元数据
+            CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+            COMMIT_HASH=$(git rev-parse HEAD)
+            COMMIT_SHORT=$(git rev-parse --short HEAD)
+            COMMIT_MSG=$(git log -1 --pretty=%B)
+            COMMIT_TIME=$(git log -1 --format="%ai")
+
+            echo "🌿 所在分支/标签 : $CURRENT_BRANCH"
+            echo "🆔 完整唯一哈希 : $COMMIT_HASH"
+            echo "🎯 短哈希缩写   : $COMMIT_SHORT"
+            echo "🕒 代码提交时间 : $COMMIT_TIME"
+            echo "💬 最新提交信息 : $COMMIT_MSG"
+            echo "=================================================="
+
+            # 3. 💡 把短哈希和信息注入 GitHub 变量，方便后续 Release 步骤直接使用
+            echo "X_SHORT_SHA=$COMMIT_SHORT" >> $GITHUB_ENV
+
         - name: Set up Python
           uses: actions/setup-python@v5
           with:
