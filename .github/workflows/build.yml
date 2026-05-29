@@ -38,7 +38,6 @@ jobs:
             repository: "15625148866/Xclepius"
             token: ${{ secrets.MY_PRIVATE_TOKEN }}
             ref: ${{ github.ref_name }}
-            path: ${{ env.PROJECT_PATH }}
 
         - name: Set up Python
           uses: actions/setup-python@v5
