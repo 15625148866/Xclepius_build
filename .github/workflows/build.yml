@@ -82,8 +82,15 @@ jobs:
             brew install jpeg zlib openssl
 
         - name: Install dependencies for wheel building
-          working-directory: ${{ github.workspace }}/${{ env.PROJECT_PATH }}
           run: |
+            echo "=== 正在强制切入代码绝对路径 ==="
+            cd "${{ github.workspace }}/${{ env.PROJECT_PATH }}"
+            
+            echo "=== 当前所在的真实物理路径是 ==="
+            pwd
+            
+            echo "=== 当前目录下的文件清单（确认是否能看到 pyproject.toml） ==="
+            ls -la
             python -m pip install --upgrade pip
             pip install Pillow pyarmor build
             # 安装项目及其所有依赖
