@@ -89,7 +89,8 @@ jobs:
             pwd
             
             echo "=== 当前目录下的文件清单（确认是否能看到 pyproject.toml） ==="
-            ls -la
+            python -c "import os; print('\n'.join(os.listdir('.')))"
+            
             python -m pip install --upgrade pip
             pip install Pillow pyarmor build
             # 安装项目及其所有依赖
@@ -342,47 +343,62 @@ jobs:
         - name: Test Executable Startup (Linux)
           if: matrix.os == 'ubuntu-22.04'
           run: |
-            echo "🚀 正在安装 Linux 虚拟显示环境 (Xvfb)..."
+            echo "🚀 正在安装 Linux 虚拟显示环境与 Qt6 图形驱动依赖 (Xvfb & EGL)..."
             sudo apt-get update
-            sudo apt-get install -y xvfb libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libjack-jackd2-dev
+            
+            # 💡【核心修复】：在原有基础上，强行补全 libegl1-mesa、libgl1、libgles2 以及 xcb 图形核心链条
+            sudo apt-get install -y \
+                xvfb \
+                libegl1-mesa \
+                libgl1-mesa-glx \
+                libgles2-mesa \
+                libxcb-cursor0 \
+                libxkbcommon-x11-0 \
+                libxcb-icccm4 \
+                libxcb-image0 \
+                libxcb-keysyms1 \
+                libxcb-randr0 \
+                libxcb-render-util0 \
+                libxcb-xinerama0 \
+                libjack-jackd2-dev
 
             echo "🚀 正在启动 Linux 自动化运行测试..."
             
-            # 1. 动态搜寻名为 PyDicomGrouping 的 Linux 二进制原生程序
+            # 动态搜寻名为 PyDicomGrouping 的 Linux 二进制原生程序
             DETECTED_PATH=$(find ${{ github.workspace }} -type f -not -path "*/.*" -name "PyDicomGrouping" | grep -v "dist_app/dist_app" | head -n 1)
             
             if [ -z "$DETECTED_PATH" ]; then
-              DETECTED_PATH=$(find ${{ github.workspace }} -type f -not -path "*/.*" -name "PyDicomGrouping" | head -n 1)
+                DETECTED_PATH=$(find ${{ github.workspace }} -type f -not -path "*/.*" -name "PyDicomGrouping" | head -n 1)
             fi
             
             if [ -z "$DETECTED_PATH" ]; then
-              echo "❌ 错误：在工作流中未找到 Linux 可执行文件！"
-              exit 1
+                echo "❌ 错误：在工作流中未找到 Linux 可执行文件！"
+                exit 1
             fi
             
             echo "🎯 已成功定位到程序入口: $DETECTED_PATH"
             
-            # 2. 💡【核心修复】：获取程序所在的绝对目录，切换进去并赋予执行权限
+            # 获取程序所在的绝对目录，切换进去并赋予执行权限
             EXE_DIR=$(dirname "$DETECTED_PATH")
             echo "📂 已自动锁定程序工作目录: $EXE_DIR"
             cd "$EXE_DIR"
             chmod +x ./PyDicomGrouping
             
-            # 3. 使用 xvfb-run 在当前的本地上下文环境下，后台启动程序
+            # 使用 xvfb-run 在当前的本地上下文环境下，后台启动程序
             xvfb-run --server-args="-screen 0 1024x768x24" ./PyDicomGrouping &
             APP_PID=$!
             
             echo "⏳ 正在监控程序加载状态，请稍候..."
             sleep 8
             
-            # 4. 检查进程是否仍在运行
+            # 检查进程是否仍在运行
             if ! ps -p $APP_PID > /dev/null; then
-              echo "❌ 错误：Linux 程序加载失败！程序在初始化时发生了闪退。"
-              exit 1
+                echo "❌ 错误：Linux 程序加载失败！程序在初始化时发生了闪退。"
+                exit 1
             else
-              echo "✅ 成功：Linux 程序能够正常在虚拟显示器中拉起并平稳运行！"
-              kill -9 $APP_PID
-              echo "🧹 测试进程已安全关闭。"
+                echo "✅ 成功：Linux 程序能够正常在虚拟显示器中拉起并平稳运行！"
+                kill -9 $APP_PID
+                echo "🧹 测试进程已安全关闭。"
             fi
         # - name: Upload Executable Artifacts
         #   uses: actions/upload-artifact@v4
@@ -392,7 +408,14 @@ jobs:
         - name: Upload to GitHub Release
           uses: softprops/action-gh-release@v2
           with:
-            # 使用通配符 * 匹配 dist_app 目录下的所有压缩文件（.zip, .tar.gz 等）
+            # 💡【核心修复 1】：如果是由打标签触发，使用原标签；如果是网页手动点击运行，自动使用临时标签（如 build-main）
+            tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('build-{0}', github.ref_name) }}
+            
+            # 💡【核心修复 2】：开启覆盖模式，这样每次你手动点运行，它都会自动更新同一个 Release 页面，不会因为 Tag 重复而崩溃
+            make_latest: true
+            generate_release_notes: true
+            
+            # 使用通配符 * 匹配 dist_app 目录下的所有压缩文件
             files: ${{ github.workspace }}/${{ env.PROJECT_PATH }}/dist_app/*.*
           env:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
