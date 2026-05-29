@@ -102,44 +102,61 @@ jobs:
           shell: bash
           run: |
             echo "Current Path: $(pwd)"
-            echo "Target Path: ${{ github.workspace }}/${{ env.PROJECT_PATH }}"
-            
-            ls -la "${{ github.workspace }}/${{ env.PROJECT_PATH }}"
+            TARGET_DIR=$(echo "${{ github.workspace }}/${{ env.PROJECT_PATH }}" | sed 's\\/\\g')
+            echo "Target Path: $TARGET_DIR"
+            ls -la "$TARGET_DIR"
 
         - name: Obfuscate and Build Wheel
           shell: bash
           run: |
-            cd ${{ github.workspace }}/${{ env.PROJECT_PATH }}
+            SAFE_PATH=$(echo "${{ github.workspace }}/${{ env.PROJECT_PATH }}" | sed 's\\/\\g')
+            cd "$SAFE_PATH"
 
             rm -rf dist_temp build dist
             mkdir -p dist_temp
 
+            # 1. 编译并混淆核心矢量代码
             pyarmor gen -O dist_temp -i --prefix PyDicomGrouping.entry_points -r src/PyDicomGrouping \
                 --exclude src/PyDicomGrouping/entry_points \
                 --exclude src/PyDicomGrouping/demos \
                 --exclude src/PyDicomGrouping/__init__.py
 
-            RUNTIME_DIR="dist_temp/PyDicomGrouping/entry_points/pyarmor_runtime_000000"
-            mkdir -p $RUNTIME_DIR
-            pyarmor gen key -e 30 -O $RUNTIME_DIR
-            
-            cp -rf dist_temp/PyDicomGrouping/* src/PyDicomGrouping/
-            python -m build
-
+            # 2. 锁定各平台的系统标签
             RAW_OS="${{ matrix.os }}"
             if [[ "$RAW_OS" == "windows-2022" ]]; then
                 PLATFORM_TAG="win_amd64"
                 FRIENDLY_OS="Windows_x64"
+                PYARMOR_PLATFORM="windows.amd64" # 💡 针对 PyArmor 的平台标记
             elif [[ "$RAW_OS" == "macos-14" ]]; then
                 PLATFORM_TAG="macosx_11_0_arm64"
                 FRIENDLY_OS="macOS_arm64"
+                PYARMOR_PLATFORM="darwin.arm64"   # 💡 针对 macOS 芯片组的核心适配
             elif [[ "$RAW_OS" == "ubuntu-22.04" ]]; then
                 PLATFORM_TAG="manylinux_2_35_x86_64"
                 FRIENDLY_OS="Linux_x64"
+                PYARMOR_PLATFORM="linux.x86_64"   # 💡 针对 Linux 服务器
             else
                 PLATFORM_TAG="any"
                 FRIENDLY_OS=$(echo "$RAW_OS" | tr '-' '_')
+                PYARMOR_PLATFORM="any"
             fi
+
+            # 3. 💡【核心修复：全平台动态安全授权】
+            # 必须显式带上 -p 参数将运行授权注入到对应的操作系统架构中，
+            # 否则编译出来的文件在之后的 8 秒运行健康体检中会由于“核心校验失败”强行闪退。
+            RUNTIME_DIR="dist_temp/PyDicomGrouping/entry_points/pyarmor_runtime_000000"
+            mkdir -p $RUNTIME_DIR
+            if [[ "$PYARMOR_PLATFORM" != "any" ]]; then
+                pyarmor gen key -p "$PYARMOR_PLATFORM" -e 30 -O $RUNTIME_DIR
+            else
+                pyarmor gen key -e 30 -O $RUNTIME_DIR
+            fi
+            
+            # 4. 💡【全平台安全覆盖】直接同步文件夹，防止通配符 * 在 Windows Git Bash 下失效
+            rsync -av dist_temp/PyDicomGrouping/ src/PyDicomGrouping/ 2>/dev/null || cp -rf dist_temp/PyDicomGrouping/. src/PyDicomGrouping/
+            
+            # 5. 构建 wheel 资产
+            python -m build
 
             for f in dist/*.whl; do
                 NEW_NAME=$(echo $f | sed "s/-any.whl/-${PLATFORM_TAG}.whl/")
@@ -343,10 +360,10 @@ jobs:
         - name: Test Executable Startup (Linux)
           if: matrix.os == 'ubuntu-22.04'
           run: |
-            echo "🚀 正在安装 Linux 虚拟显示环境与 Qt6 图形驱动依赖 (Xvfb & EGL)..."
+            echo "🚀 正在全面补全 Linux 虚拟环境与 Qt6 XCB 底层依赖库..."
             sudo apt-get update
             
-            # 💡【核心修复】：在原有基础上，强行补全 libegl1-mesa、libgl1、libgles2 以及 xcb 图形核心链条
+            # 💡【核心修复 1】：一次性强行灌入所有让 Qt6 XCB 插件保持呼吸所需的底层物理库
             sudo apt-get install -y \
                 xvfb \
                 libegl1-mesa \
@@ -360,13 +377,20 @@ jobs:
                 libxcb-randr0 \
                 libxcb-render-util0 \
                 libxcb-xinerama0 \
+                libxcb-shape0 \
+                libxcb-xfixes0 \
+                libxcb-util1 \
+                libxi6 \
+                libxrender1 \
+                libxtst6 \
+                libfontconfig1 \
+                libdbus-1-3 \
                 libjack-jackd2-dev
 
             echo "🚀 正在启动 Linux 自动化运行测试..."
             
             # 动态搜寻名为 PyDicomGrouping 的 Linux 二进制原生程序
             DETECTED_PATH=$(find ${{ github.workspace }} -type f -not -path "*/.*" -name "PyDicomGrouping" | grep -v "dist_app/dist_app" | head -n 1)
-            
             if [ -z "$DETECTED_PATH" ]; then
                 DETECTED_PATH=$(find ${{ github.workspace }} -type f -not -path "*/.*" -name "PyDicomGrouping" | head -n 1)
             fi
@@ -384,7 +408,12 @@ jobs:
             cd "$EXE_DIR"
             chmod +x ./PyDicomGrouping
             
-            # 使用 xvfb-run 在当前的本地上下文环境下，后台启动程序
+            # 💡【核心修复 2】：强制声明 Qt 运行参数与显示端口绑定
+            export DISPLAY=:99
+            export QT_DEBUG_PLUGINS=1
+            export QT_QPA_PLATFORM=xcb
+
+            # 使用 xvfb-run 在独立的虚拟显示端口中后台启动程序
             xvfb-run --server-args="-screen 0 1024x768x24" ./PyDicomGrouping &
             APP_PID=$!
             
@@ -394,6 +423,7 @@ jobs:
             # 检查进程是否仍在运行
             if ! ps -p $APP_PID > /dev/null; then
                 echo "❌ 错误：Linux 程序加载失败！程序在初始化时发生了闪退。"
+                echo "💡 提示：如果依然闪退，请往上滚动查看由 QT_DEBUG_PLUGINS=1 打印出的具体是哪一个 .so 文件缺失。"
                 exit 1
             else
                 echo "✅ 成功：Linux 程序能够正常在虚拟显示器中拉起并平稳运行！"
