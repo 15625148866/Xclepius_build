@@ -233,7 +233,7 @@ jobs:
                 --icon-size 100 \
                 --icon "PyDicomGrouping.app" 150 120 \
                 --app-drop-link 450 120 \
-                --volicon "${ICON_PATH}" \
+                --volume-icon "${ICON_PATH}" \
                 "${CLEAN_DMG_NAME}.dmg" \
                 "PyDicomGrouping.app"
                 
