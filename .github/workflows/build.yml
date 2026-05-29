@@ -82,7 +82,7 @@ jobs:
             brew install jpeg zlib openssl
 
         - name: Install dependencies for wheel building
-          working-directory: ${{ env.PROJECT_PATH }} 
+          working-directory: ${{ github.workspace }}/${{ env.PROJECT_PATH }}
           run: |
             python -m pip install --upgrade pip
             pip install Pillow pyarmor build
@@ -95,13 +95,14 @@ jobs:
           shell: bash
           run: |
             echo "Current Path: $(pwd)"
-            echo "Target Path: ${{ env.PROJECT_PATH }}"
-            ls -la "${{ env.PROJECT_PATH }}"
+            echo "Target Path: ${{ github.workspace }}/${{ env.PROJECT_PATH }}"
+            
+            ls -la "${{ github.workspace }}/${{ env.PROJECT_PATH }}"
 
         - name: Obfuscate and Build Wheel
           shell: bash
           run: |
-            cd ${{ env.PROJECT_PATH }}
+            cd ${{ github.workspace }}/${{ env.PROJECT_PATH }}
 
             rm -rf dist_temp build dist
             mkdir -p dist_temp
