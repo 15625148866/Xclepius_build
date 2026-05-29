@@ -111,53 +111,36 @@ jobs:
           run: |
             SAFE_PATH=$(python3 -c "import os; print('${{ github.workspace }}/${{ env.PROJECT_PATH }}'.replace('\\\\', '/'))")
             cd "$SAFE_PATH"
-            cd "$SAFE_PATH"
-
+            
             rm -rf dist_temp build dist
             mkdir -p dist_temp
 
-            # 1. 编译并混淆核心矢量代码
             pyarmor gen -O dist_temp -i --prefix PyDicomGrouping.entry_points -r src/PyDicomGrouping \
                 --exclude src/PyDicomGrouping/entry_points \
                 --exclude src/PyDicomGrouping/demos \
                 --exclude src/PyDicomGrouping/__init__.py
 
-            # 2. 锁定各平台的系统标签
+            RUNTIME_DIR="dist_temp/PyDicomGrouping/entry_points/pyarmor_runtime_000000"
+            mkdir -p $RUNTIME_DIR
+            pyarmor gen key -e 30 -O $RUNTIME_DIR
+            
+            cp -rf dist_temp/PyDicomGrouping/* src/PyDicomGrouping/
+            python -m build
+
             RAW_OS="${{ matrix.os }}"
             if [[ "$RAW_OS" == "windows-2022" ]]; then
                 PLATFORM_TAG="win_amd64"
                 FRIENDLY_OS="Windows_x64"
-                PYARMOR_PLATFORM="windows.amd64" # 💡 针对 PyArmor 的平台标记
             elif [[ "$RAW_OS" == "macos-14" ]]; then
                 PLATFORM_TAG="macosx_11_0_arm64"
                 FRIENDLY_OS="macOS_arm64"
-                PYARMOR_PLATFORM="darwin.arm64"   # 💡 针对 macOS 芯片组的核心适配
             elif [[ "$RAW_OS" == "ubuntu-22.04" ]]; then
                 PLATFORM_TAG="manylinux_2_35_x86_64"
                 FRIENDLY_OS="Linux_x64"
-                PYARMOR_PLATFORM="linux.x86_64"   # 💡 针对 Linux 服务器
             else
                 PLATFORM_TAG="any"
                 FRIENDLY_OS=$(echo "$RAW_OS" | tr '-' '_')
-                PYARMOR_PLATFORM="any"
             fi
-
-            # 3. 💡【核心修复：全平台动态安全授权】
-            # 必须显式带上 -p 参数将运行授权注入到对应的操作系统架构中，
-            # 否则编译出来的文件在之后的 8 秒运行健康体检中会由于“核心校验失败”强行闪退。
-            RUNTIME_DIR="dist_temp/PyDicomGrouping/entry_points/pyarmor_runtime_000000"
-            mkdir -p $RUNTIME_DIR
-            if [[ "$PYARMOR_PLATFORM" != "any" ]]; then
-                pyarmor gen key -p "$PYARMOR_PLATFORM" -e 30 -O $RUNTIME_DIR
-            else
-                pyarmor gen key -e 30 -O $RUNTIME_DIR
-            fi
-            
-            # 4. 💡【全平台安全覆盖】直接同步文件夹，防止通配符 * 在 Windows Git Bash 下失效
-            rsync -av dist_temp/PyDicomGrouping/ src/PyDicomGrouping/ 2>/dev/null || cp -rf dist_temp/PyDicomGrouping/. src/PyDicomGrouping/
-            
-            # 5. 构建 wheel 资产
-            python -m build
 
             for f in dist/*.whl; do
                 NEW_NAME=$(echo $f | sed "s/-any.whl/-${PLATFORM_TAG}.whl/")
